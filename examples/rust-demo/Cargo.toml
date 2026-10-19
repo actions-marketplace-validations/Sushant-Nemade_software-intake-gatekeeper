@@ -1,0 +1,10 @@
+[package]
+name = "rust-demo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Fictional fixture for Software Intake Gatekeeper; smallvec 1.6.0 is pinned on purpose (RUSTSEC-2021-0003)."
+license = "MIT"
+
+[dependencies]
+smallvec = "=1.6.0"

@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "software-intake-gatekeeper"
-version = "0.2.2"
-description = "Local, evidence-first intake checks for third-party apps and binaries: SBOM, known vulnerabilities and Electron hardening."
+version = "0.3.0"
+description = "Local, evidence-first intake checks for third-party apps and binaries: SBOM (Go, Rust, npm, NuGet, Python, Maven), known vulnerabilities, Electron hardening and code-signing changes."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Sushant Nemade" }]
-keywords = ["sbom", "cyclonedx", "sarif", "osv", "electron", "supply-chain", "security"]
+keywords = ["sbom", "cyclonedx", "sarif", "osv", "electron", "supply-chain", "security", "cargo-auditable", "maven", "authenticode"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -34,6 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "build>=1.2",
+    "cryptography>=44",
     "cyclonedx-python-lib[json-validation]>=9",
     "mypy>=1.13",
     "pip-audit>=2.7",

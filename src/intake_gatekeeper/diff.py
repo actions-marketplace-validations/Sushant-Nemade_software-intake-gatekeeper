@@ -35,6 +35,18 @@ class FuseChange:
     weakened: bool
 
 
+@dataclass(frozen=True)
+class SignatureChange:
+    path: str
+    old: str | None
+    new: str | None
+    kind: str  # removed, signer-changed, certificate-renewed or added
+
+    @property
+    def needs_review(self) -> bool:
+        return self.kind in ("removed", "signer-changed")
+
+
 @dataclass
 class UpdateDiff:
     old: Report
@@ -50,6 +62,7 @@ class UpdateDiff:
     binaries_added: list[str] = field(default_factory=list)
     binaries_removed: list[str] = field(default_factory=list)
     binaries_changed: list[str] = field(default_factory=list)
+    signature_changes: list[SignatureChange] = field(default_factory=list)
     decision: Decision = Decision.APPROVE
     reasons: list[str] = field(default_factory=list)
 
@@ -122,6 +135,21 @@ def compare(old: Report, new: Report, policy: Policy) -> UpdateDiff:
     diff.binaries_removed = sorted(old_bins.keys() - new_bins.keys())
     diff.binaries_changed = sorted(p for p in new_bins.keys() & old_bins.keys() if new_bins[p] != old_bins[p])
 
+    old_by_path = {b.path: b for b in old.inventory.binaries}
+    for binary in sorted(new.inventory.binaries, key=lambda b: b.path):
+        previous = old_by_path.get(binary.path)
+        if previous is None or previous.signer_sha1 == binary.signer_sha1:
+            continue
+        if previous.signer and not binary.signer:
+            kind = "removed"
+        elif not previous.signer:
+            kind = "added"
+        elif previous.signer != binary.signer:
+            kind = "signer-changed"
+        else:
+            kind = "certificate-renewed"
+        diff.signature_changes.append(SignatureChange(binary.path, previous.signer, binary.signer, kind))
+
     diff.decision, diff.reasons = _decide(diff, policy)
     return diff
 
@@ -142,6 +170,12 @@ def _decide(diff: UpdateDiff, policy: Policy) -> tuple[Decision, list[str]]:
         )
     if weakened:
         reasons.append(f"{len(weakened)} Electron fuse(s) weakened.")
+    removed = [c for c in diff.signature_changes if c.kind == "removed"]
+    resigned = [c for c in diff.signature_changes if c.kind == "signer-changed"]
+    if removed:
+        reasons.append(f"{len(removed)} executable(s) lost their code signature.")
+    if resigned:
+        reasons.append(f"{len(resigned)} executable(s) are signed by a different publisher.")
     if diff.endpoints_added:
         reasons.append(f"{len(diff.endpoints_added)} new network endpoint(s) referenced by app code.")
     if diff.binaries_added:

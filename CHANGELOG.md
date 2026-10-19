@@ -3,6 +3,28 @@
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/);
 while the major version is 0, minor releases may change behaviour.
 
+## [0.3.0] - 2026-10-18
+
+### Added
+
+- Rust inventory from `cargo auditable` data (`.dep-v0` section) in ELF, PE and Mach-O, including
+  universal binaries, through a new bounded, dependency-free object-file reader. Build-only crates,
+  the root package and non-crates.io sources are listed but not sent to OSV.
+- Python inventory from `*.dist-info/METADATA` and `*.egg-info` metadata (`pkg:pypi`, PEP 503 names).
+- Maven inventory from `pom.properties` inside `.jar`, `.war` and `.ear` files, including nested
+  archives up to two levels (Spring Boot, WAR) read in memory with size and entry limits.
+- Authenticode signer (subject, issuer, SHA-1 thumbprint) for PE files, without verification.
+- Update check: removed signatures and a different signer on the same path need REVIEW; renewed
+  certificates from the same signer and newly signed files are listed only.
+- Real-artifact CI job on Linux, Windows and macOS: `cargo auditable` builds compared with
+  `rust-audit-info`, Maven Central and PyPI artifacts with live OSV, and Windows'
+  `Get-AuthenticodeSignature`.
+
+### Changed
+
+- The `nothing-recognized` gap now says how many binaries were fingerprinted without dependency data.
+- Files that start with `MZ` but have no PE header are treated as non-PE instead of malformed.
+
 ## [0.2.2] - 2026-10-15
 
 ### Fixed
@@ -63,6 +85,7 @@ First public release and first GitHub Marketplace listing.
 - No Rust `cargo auditable`, Python wheel, Java or native C/C++ inventories yet.
 - Electron code rules detect literal settings only.
 
+[0.3.0]: https://github.com/Sushant-Nemade/software-intake-gatekeeper/releases/tag/v0.3.0
 [0.2.2]: https://github.com/Sushant-Nemade/software-intake-gatekeeper/releases/tag/v0.2.2
 [0.2.1]: https://github.com/Sushant-Nemade/software-intake-gatekeeper/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Sushant-Nemade/software-intake-gatekeeper/releases/tag/v0.2.0

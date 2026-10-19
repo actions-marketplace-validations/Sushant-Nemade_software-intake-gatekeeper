@@ -114,7 +114,17 @@ def _report_document(report: Report) -> dict[str, Any]:
         ],
         "endpoints": dict(sorted(inventory.endpoints.items())),
         "binaries": [
-            {"path": b.path, "size": b.size, "sha256": b.sha256, "kind": b.kind}
+            {
+                "path": b.path,
+                "size": b.size,
+                "sha256": b.sha256,
+                "kind": b.kind,
+                "signer": (
+                    {"subject": b.signer, "issuer": b.signer_issuer, "sha1_thumbprint": b.signer_sha1}
+                    if b.signer
+                    else None
+                ),
+            }
             for b in sorted(inventory.binaries, key=lambda b: b.path)
         ],
     }
@@ -365,6 +375,17 @@ def to_markdown(report: Report, max_findings: int = 50) -> str:
         enabled = ", ".join(f"{md(k)}={md(v)}" for k, v in info.fuses.items())
         lines.append(f"**Electron** {md(info.version or 'unknown')} in {code(info.executable)}: {enabled}")
         lines.append("")
+    signers: dict[str, int] = {}
+    for binary in inventory.binaries:
+        if binary.signer:
+            signers[binary.signer] = signers.get(binary.signer, 0) + 1
+    if signers:
+        listed = ", ".join(f"{md(name, 80)} ({count})" for name, count in sorted(signers.items()))
+        lines += [
+            f"**Code signing** (claimed Authenticode signer, not verified): {listed}; "
+            f"{len(inventory.binaries) - sum(signers.values())} binaries without an embedded signature.",
+            "",
+        ]
     affected: dict[str, list[Finding]] = {}
     for finding in inventory.findings:
         if finding.vulnerability is not None and finding.component_purl and not finding.waived:
@@ -506,6 +527,10 @@ def to_diff_json(diff: UpdateDiff) -> str:
             "removed": diff.binaries_removed,
             "changed": diff.binaries_changed,
         },
+        "signatures": [
+            {"path": c.path, "change": c.kind, "old_signer": c.old, "new_signer": c.new}
+            for c in diff.signature_changes
+        ],
         "reports": {"old": _report_document(diff.old), "new": _report_document(diff.new)},
     }
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
@@ -548,6 +573,24 @@ def to_diff_markdown(diff: UpdateDiff, max_rows: int = 40) -> str:
                 f"| {md(change.fuse)} | {md(change.old or '-')} | {md(change.new or '-')} | {flag} |"
             )
         lines.append("")
+    if diff.signature_changes:
+        lines += [
+            "### Code signing changes",
+            "",
+            "| File | Change | Old signer | New signer |",
+            "|---|---|---|---|",
+        ]
+        for sig in diff.signature_changes[:max_rows]:
+            label = f"**{sig.kind}**" if sig.needs_review else sig.kind
+            lines.append(
+                f"| {code(sig.path, 100)} | {label} "
+                f"| {md(sig.old or 'unsigned', 80)} | {md(sig.new or 'unsigned', 80)} |"
+            )
+        lines += [
+            "",
+            "_Signer names are read from the embedded signature and not cryptographically verified._",
+            "",
+        ]
     if diff.new_findings:
         lines += ["### New findings", "", "| Severity | ID | Finding |", "|---|---|---|"]
         for finding in diff.new_findings[:max_rows]:
@@ -608,6 +651,11 @@ def to_diff_text(diff: UpdateDiff, max_rows: int = 15) -> str:
     for change in diff.fuse_changes:
         flag = " (weakened)" if change.weakened else ""
         lines.append(f"  fuse {change.fuse}: {change.old} -> {change.new}{flag}")
+    for sig in diff.signature_changes:
+        lines.append(
+            f"  signature {sig.kind}: {clean_text(sig.path, 100)} "
+            f"({clean_text(sig.old or 'unsigned', 60)} -> {clean_text(sig.new or 'unsigned', 60)})"
+        )
     for finding in diff.new_findings[:max_rows]:
         lines.append(
             f"  NEW [{finding.severity.label.upper():8}] {clean_text(finding.rule_id, 60)} "

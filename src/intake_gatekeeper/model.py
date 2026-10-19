@@ -92,6 +92,15 @@ def build_purl(ecosystem: str, name: str, version: str) -> str:
         return f"pkg:golang/{path}@{encoded_version}"
     if ecosystem == "NuGet":
         return f"pkg:nuget/{quote(name, safe=_PURL_SAFE)}@{encoded_version}"
+    if ecosystem == "crates.io":
+        return f"pkg:cargo/{quote(name, safe=_PURL_SAFE)}@{encoded_version}"
+    if ecosystem == "PyPI":
+        return f"pkg:pypi/{quote(name.lower(), safe=_PURL_SAFE)}@{encoded_version}"
+    if ecosystem == "Maven":
+        group, _, artifact = name.partition(":")
+        return (
+            f"pkg:maven/{quote(group, safe=_PURL_SAFE)}/{quote(artifact, safe=_PURL_SAFE)}@{encoded_version}"
+        )
     raise ValueError(f"unsupported ecosystem {ecosystem!r}")
 
 
@@ -182,6 +191,10 @@ class BinaryInfo:
     size: int
     sha256: str
     kind: str
+    # Claimed Authenticode signer (not cryptographically verified); None when unsigned or not PE.
+    signer: str | None = None
+    signer_issuer: str | None = None
+    signer_sha1: str | None = None
 
 
 @dataclass

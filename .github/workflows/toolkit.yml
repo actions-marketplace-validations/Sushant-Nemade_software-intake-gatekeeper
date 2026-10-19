@@ -1,0 +1,59 @@
+name: Software trust toolkit (published actions)
+
+# Runs both published actions together, exactly as the README recipe shows. Manual trigger only.
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  trust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Sushant-Nemade/privacy-flow-inspector
+          path: privacy-flow-inspector
+      - name: What is inside the app
+        id: inside
+        uses: Sushant-Nemade/software-intake-gatekeeper@v0
+        with:
+          path: examples/vulnerable-demo
+          fail-on: never
+          output-dir: trust-reports/inside
+      - name: What the app sends out
+        id: sends
+        uses: Sushant-Nemade/privacy-flow-inspector@v0
+        with:
+          har: privacy-flow-inspector/examples/recorded/*.har
+          config: privacy-flow-inspector/examples/pfi.toml
+          fail-on: never
+          output-dir: trust-reports/sends
+      - name: Trust gate
+        id: gate
+        continue-on-error: true
+        env:
+          INSIDE: ${{ steps.inside.outputs.decision }}
+          SENDS: ${{ steps.sends.outputs.decision }}
+        run: |
+          {
+            echo "## Software trust toolkit"
+            echo "| Check | Decision |"
+            echo "|---|---|"
+            echo "| What is inside the app (Software Intake Gatekeeper) | $INSIDE |"
+            echo "| What the app sends out (Privacy Flow Inspector) | $SENDS |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$INSIDE" != reject ] && [ "$SENDS" != reject ]
+      - name: The fictional demos must be rejected by both tools
+        env:
+          INSIDE: ${{ steps.inside.outputs.decision }}
+          SENDS: ${{ steps.sends.outputs.decision }}
+          GATE: ${{ steps.gate.outcome }}
+        run: |
+          test "$INSIDE" = reject
+          test "$SENDS" = reject
+          test "$GATE" = failure
+          test -s trust-reports/inside/sbom.cdx.json
+          test -s trust-reports/sends/redacted/demo-shop.redacted.har

@@ -13,3 +13,4 @@ examples/vulnerable-demo/bin/
 tests/.go-fixtures/
 reports/
 intake-gatekeeper.*
+examples/rust-demo/target/

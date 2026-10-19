@@ -7,28 +7,33 @@
 
 **Before you install, approve or ship a third-party app, find out what is inside it.**
 
-Software Intake Gatekeeper reads an installed application, an Electron `.asar` archive or a
-compiled binary. It never runs or unpacks it. It produces:
+Software Intake Gatekeeper reads an installed application, an Electron `.asar` archive, a Java
+archive or a compiled binary. It never runs or unpacks it. It produces:
 
-- a **CycloneDX 1.6 SBOM** of the components that are actually bundled,
+- a **CycloneDX 1.6 SBOM** of the components that are actually bundled: Go, Rust, npm, NuGet,
+  Python and Maven packages, read from evidence inside the files,
 - **known vulnerabilities** for those exact versions from [OSV.dev](https://osv.dev) (only when you opt in),
 - **Electron hardening checks** for the fuse wire inside the executable and risky `BrowserWindow`
   settings in the app code,
+- the **Authenticode signer** of each Windows executable,
 - an **APPROVE / REVIEW / REJECT** decision from a versioned policy, with expiring waivers,
 - an **update check** that compares two versions and gates on what the update *adds*: new
-  vulnerabilities, weakened Electron fuses, new network endpoints, new native modules,
+  vulnerabilities, weakened Electron fuses, new network endpoints, new native modules, removed
+  signatures and a different publisher,
 - **SARIF** for GitHub code scanning, a **Markdown** summary for pull requests and a full **JSON** evidence report.
 
 Every finding names the file and, for scripts, the line, column and snippet that produced it.
 Anything the scanner could not verify is reported as a **coverage gap**. A blocking gap can
 never lead to APPROVE: an unknown result is not treated as safe.
 
-> Status: [v0.2.2](https://github.com/Sushant-Nemade/software-intake-gatekeeper/releases/tag/v0.2.2),
+> Status: [v0.3.0](https://github.com/Sushant-Nemade/software-intake-gatekeeper/releases/tag/v0.3.0),
 > an alpha release on [PyPI](https://pypi.org/project/software-intake-gatekeeper/) and the
-> [GitHub Marketplace](https://github.com/marketplace/actions/software-intake-gatekeeper). The CLI is
-> tested on Windows and Linux with real Go binaries in three object formats, an ASAR archive packed
-> by the official `@electron/asar` tool and the live OSV API; the action also runs on macOS. The
-> results are static, version-level evidence, not proof of exploitability.
+> [GitHub Marketplace](https://github.com/marketplace/actions/software-intake-gatekeeper). Every
+> parser is checked against real artifacts: Go binaries in three object formats, `cargo auditable`
+> builds compared with the official `rust-audit-info` decoder on Linux, Windows and macOS, JARs from
+> Maven Central, packages installed by pip, signed executables compared with Windows'
+> `Get-AuthenticodeSignature`, and the live OSV API. The results are static, version-level
+> evidence, not proof of exploitability.
 
 Part of a small **software trust toolkit** with
 [Privacy Flow Inspector](https://github.com/Sushant-Nemade/privacy-flow-inspector): this tool checks
@@ -41,6 +46,8 @@ what is **inside** an app; the inspector checks which personal data the app **se
 | Who | Situation | What they get |
 |---|---|---|
 | IT / security intake | An employee requests a desktop tool (an Electron or Go CLI) | An SBOM, known CVEs and Electron hardening issues before approval, with a decision a reviewer can sign off |
+| Platform and backend teams | A vendor ships a Spring Boot service, a Python tool or a Rust CLI | Maven coordinates from nested JARs (Log4Shell is found inside `BOOT-INF/lib`), Python package versions and Rust crates, each with advisories |
+| Patch management | A new version of an approved app arrives | An update check that flags a removed signature or a different publisher before the rollout |
 | Product teams shipping Electron | A release candidate is ready | A CI gate that fails when `contextIsolation` is off, `RunAsNode` is enabled or bundled packages have critical advisories |
 | Supply-chain / compliance (EU CRA, medical-device SBOM expectations) | A vendor delivers a binary without an SBOM | A CycloneDX SBOM built from evidence inside the binary, with occurrences pointing to the source files |
 | Procurement / vendor review | Comparing two vendor builds | Reproducible JSON and SBOM output that can be compared across versions |
@@ -56,9 +63,9 @@ python -m pip install software-intake-gatekeeper
 To verify build provenance first, install the wheel from the GitHub release instead:
 
 ```powershell
-gh release download v0.2.2 -R Sushant-Nemade/software-intake-gatekeeper -p "*.whl"
-gh attestation verify software_intake_gatekeeper-0.2.2-py3-none-any.whl -R Sushant-Nemade/software-intake-gatekeeper
-python -m pip install software_intake_gatekeeper-0.2.2-py3-none-any.whl
+gh release download v0.3.0 -R Sushant-Nemade/software-intake-gatekeeper -p "*.whl"
+gh attestation verify software_intake_gatekeeper-0.3.0-py3-none-any.whl -R Sushant-Nemade/software-intake-gatekeeper
+python -m pip install software_intake_gatekeeper-0.3.0-py3-none-any.whl
 ```
 
 Or install from a clone (needed for the demo below):
@@ -154,23 +161,29 @@ Components changed: 2 | endpoints +1/-0 | binaries +1/-0/~0
 | Electron | Runtime version change and every fuse change; a fuse moving into its risky state is **weakened** |
 | Network endpoints | Hosts of `http(s)://` and `ws(s)://` URLs that start a string literal in app code (outside `node_modules`); URLs in comments and license headers, XML namespaces and local addresses are skipped |
 | Executables and native modules | Added, removed or changed (SHA-256) PE, ELF and Mach-O files, including `.node` modules |
+| Code signing | For the same file path: signature **removed**, **signer-changed** (different subject), `certificate-renewed` (same subject, new certificate) or `added` |
 
 **REJECT** if a new finding reaches `reject_at`. **REVIEW** for new findings at `review_at`, weakened
-fuses, new endpoints, new binaries, new components or blocking gaps in the new version.
-**APPROVE** otherwise. The SARIF output contains only the new findings.
+fuses, new endpoints, new binaries, new components, removed signatures, a different signer or
+blocking gaps in the new version. **APPROVE** otherwise. The SARIF output contains only the new
+findings.
 
 ## What it inspects
 
 | Evidence | Source inside the target | Output |
 |---|---|---|
 | Go modules and toolchain | Build info embedded by the Go linker (Go 1.18+) in PE, ELF and Mach-O executables | `pkg:golang/...` components, including `stdlib` and `replace` directives |
+| Rust crates | The zlib-compressed `.dep-v0` section that [`cargo auditable`](https://github.com/rust-secure-code/cargo-auditable) embeds in ELF, PE and Mach-O (including universal) binaries | `pkg:cargo/...` components; build-only crates and non-crates.io sources are listed but not queried |
+| Python packages | `*.dist-info/METADATA` and `*.egg-info` (`PKG-INFO`) on disk, for example a bundled `site-packages` | `pkg:pypi/...` components with PEP 503 names |
+| Maven artifacts | `META-INF/maven/**/pom.properties` in `.jar`, `.war` and `.ear` files, including nested archives such as Spring Boot `BOOT-INF/lib` and `WEB-INF/lib` (two levels, read in memory) | `pkg:maven/...` components, also for shaded dependencies |
 | npm packages | `node_modules/**/package.json` on disk and inside `.asar` archives | `pkg:npm/...` components; the app's own manifest is recorded but not queried |
 | NuGet packages | `*.deps.json` (`package` and self-contained `runtimepack` entries) | `pkg:nuget/...` components |
 | .NET shared framework | `*.runtimeconfig.json` | Minimum framework version, plus a note that the host runtime decides the patch level |
 | Electron runtime | The fuse sentinel and `Electron/x.y.z` string in the executable | Electron version (queried as npm `electron`) and the fuse states |
 | Electron app code | `.js/.cjs/.mjs/.ts` files outside `node_modules`, on disk or in `.asar` | `webPreferences` rule findings with line, column and snippet |
 | Network endpoints | `http(s)://` and `ws(s)://` hosts referenced by that app code | Host list with up to three source files each (used by the update check) |
-| Executables and native modules | PE, ELF and Mach-O files, including `.node` add-ons | Path, size, SHA-256 and kind (Go, Electron, native) |
+| Executables and native modules | PE, ELF and Mach-O files, including `.node` add-ons | Path, size, SHA-256 and kind (Go, Rust, Electron, native) |
+| Code signing | The Authenticode certificate table of PE files | Claimed signer subject, issuer and SHA-1 thumbprint (the value Windows shows); not cryptographically verified |
 
 ### Electron rules
 
@@ -293,6 +306,29 @@ dependencies into a private virtual environment under `RUNNER_TEMP`, so it does 
 job's Python. Inputs reach the script only through environment variables and are never
 interpolated into shell code. No token or secret is required.
 
+### Use it together with Privacy Flow Inspector
+
+One job can check both **what is inside** an app and **what it sends out**: build or unpack the
+app, run your Playwright tests to record HAR files, then run both actions and gate on both
+decisions. The [toolkit workflow](https://github.com/Sushant-Nemade/software-intake-gatekeeper/blob/main/.github/workflows/toolkit.yml)
+runs this with the published actions against both fictional demos.
+
+```yaml
+      - name: What is inside the app
+        id: inside
+        uses: Sushant-Nemade/software-intake-gatekeeper@v0
+        with: { path: dist/app, fail-on: never, output-dir: trust-reports/inside }
+      - name: What the app sends out
+        id: sends
+        uses: Sushant-Nemade/privacy-flow-inspector@v0
+        with: { har: "test-results/**/*.har", config: .github/pfi.toml, fail-on: never, output-dir: trust-reports/sends }
+      - name: Trust gate
+        env:
+          INSIDE: ${{ steps.inside.outputs.decision }}
+          SENDS: ${{ steps.sends.outputs.decision }}
+        run: '[ "$INSIDE" != reject ] && [ "$SENDS" != reject ]'
+```
+
 ### Versioning
 
 Releases follow [Semantic Versioning](https://semver.org/) and are listed in [CHANGELOG.md](https://github.com/Sushant-Nemade/software-intake-gatekeeper/blob/main/CHANGELOG.md).
@@ -313,26 +349,38 @@ and a `SHA256SUMS` file.
 
 ## Verification
 
+The [real-world case study](https://github.com/Sushant-Nemade/software-intake-gatekeeper/blob/main/docs/real-world-case-study.md)
+describes the tests on real software and the fixes they led to.
+
 | Check | How |
 |---|---|
 | Go build info decoding | Compared with `go version -m` on real binaries built in CI for Windows PE, Linux ELF and macOS Mach-O |
+| Rust `cargo auditable` | CI builds a fixture with `cargo auditable` 0.7.7 on Linux, Windows and macOS and requires the same crates as the official `rust-audit-info` 0.5.4 decoder, then finds RUSTSEC-2021-0003 through live OSV. Locally, Alpine Linux's official `ripgrep` 14.1.1 binary decoded to 42 crates, every one matching ripgrep's `Cargo.lock` |
+| Maven and Python | CI downloads `log4j-core` 2.14.1 from Maven Central (SHA-1 checked), nests it in a Spring Boot style JAR and requires Log4Shell (CVE-2021-44228); pip installs `requests` 2.25.0 and CVE-2023-32681 must be found. Locally, `jackson-databind` 2.9.10 nested in a fat JAR returned 49 advisories |
+| Authenticode | CI compares signer and thumbprint with Windows' `Get-AuthenticodeSignature` for a signed executable. Locally identical for VS Code, Node.js, Git and uv; catalog-signed and unsigned files report no embedded signature |
 | ASAR parsing | Fixture packed by `@electron/asar` 4.3.1; listing matches the official tool |
 | Fuse decoding | Wire layout taken from `@electron/fuses`. A read-only local check on an installed Electron app (VS Code) matched `npx @electron/fuses read` for all 9 fuses |
 | Output formats | CycloneDX validated with `cyclonedx-python-lib` against the 1.6 schema in tests. SARIF validated against the OASIS 2.1.0 schema during development |
 | OSV client | Mocked transport tests (batching, pagination, retries, alias grouping, withdrawn advisories) plus an opt-in live test (`INTAKE_LIVE_OSV=1`) |
 | Scale | Read-only scan of a locally installed VS Code: 3,243 files and 5,451 archive entries in about 19 s with a warm file cache |
 | Real update | Update check of the open-source editor MarkText 0.21.1 to 0.21.2 (official Windows zips, checksums verified; 20,072 ASAR entries, 505 npm packages, live OSV) in about 30 s. It showed 27 resolved advisories, 49 new packages and changed native modules. The first run also reported 10 new and 10 resolved code findings that were only a renamed bundle (`index-BBEVtY79.js` to `index-Cz8Eo_n9.js`), and 44 new endpoints taken from code comments; v0.2.2 fixed both, leaving 0 new findings and 1 new endpoint |
-| CI | Ubuntu (Python 3.11 and 3.13) and Windows (3.13): pytest, ruff, mypy `--strict`, build, twine, pip-audit. The action itself runs on Ubuntu, Windows and macOS against the demo with live OSV, plus fail-on, invalid-input and update-check (`compare-to`) runs |
+| CI | Ubuntu (Python 3.11 and 3.13) and Windows (3.13): pytest, ruff, mypy `--strict`, build, twine, pip-audit. A real-artifact job on Ubuntu, Windows and macOS. The action itself runs on Ubuntu, Windows and macOS against the demo with live OSV, plus fail-on, invalid-input and update-check (`compare-to`) runs |
 
-No third-party application files are committed. The local real-app checks are listed for
-transparency only.
+No third-party application files are committed. Unit tests build minimal ELF, PE and Mach-O files
+and sign them with throwaway certificates; real artifacts are downloaded and checked in CI.
 
 ## Limitations
 
 - Version matching is not reachability. A vulnerable function may never be called; use waivers
   with reasons when you have checked this.
-- It reads Go build info only for Go 1.18+ (older binaries are reported as gaps). It does not yet
-  read Rust `cargo auditable` sections, Python wheels, Java JARs or native C/C++ libraries.
+- It reads Go build info only for Go 1.18+ (older binaries are reported as gaps) and Rust crates
+  only from binaries built with `cargo auditable`. Native C/C++ libraries are fingerprinted but not
+  identified.
+- Python packages are read from installed metadata folders, not from wheels, eggs or
+  PyInstaller/zipapp bundles. JARs without `pom.properties` are counted as a coverage note.
+- The Authenticode check reports who a signature *claims* to be from. It does not verify the
+  signature, the certificate chain or revocation; use `Get-AuthenticodeSignature` or `signtool
+  verify` for that. Catalog signatures and macOS code signatures are not read.
 - Electron code rules are pattern-based. They catch literal settings, including minified ones,
   but not values computed at runtime.
 - Installers (`.exe`/`.msi`/`.dmg`) must be extracted or installed first. The tool does not unpack
@@ -342,12 +390,13 @@ transparency only.
 
 ## Roadmap
 
-1. Rust `cargo auditable`, Python `*.dist-info` and Java `pom.properties` inventories.
-2. Signature and publisher changes (Authenticode, code signing) in the update check.
+1. macOS code signatures (Team ID) in the update check.
+2. Python wheels and PyInstaller bundles; Gradle and `MANIFEST.MF`-only JARs.
 3. An optional adapter for reverse-engineering evidence tools behind an approval gate.
 
-Shipped from earlier roadmap items: the version-to-version update check (v0.2.0) and the
-PII-in-HAR inspector, released as the separate
+Shipped from earlier roadmap items: Rust, Python and Maven inventories with Authenticode signer
+changes (v0.3.0), the version-to-version update check (v0.2.0) and the PII-in-HAR inspector,
+released as the separate
 [Privacy Flow Inspector](https://github.com/Sushant-Nemade/privacy-flow-inspector).
 
 ## Development

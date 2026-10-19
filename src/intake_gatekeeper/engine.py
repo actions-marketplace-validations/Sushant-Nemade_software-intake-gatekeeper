@@ -22,8 +22,14 @@ def run_scan(
     scanned_at = now or datetime.now(UTC)
     inventory = scan_path(target, limits)
     if not inventory.components and not inventory.findings and not inventory.electron:
+        fingerprinted = len(inventory.binaries)
+        detail = (
+            f" {fingerprinted} binaries were fingerprinted but carry no readable dependency data."
+            if fingerprinted
+            else ""
+        )
         inventory.gaps.append(
-            Gap("nothing-recognized", "No supported packages, manifests or binaries were found.")
+            Gap("nothing-recognized", "No supported packages or manifests were found." + detail)
         )
     queryable = [component for component in inventory.components if component.queryable]
     if osv is None:

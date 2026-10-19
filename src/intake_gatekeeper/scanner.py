@@ -11,7 +11,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from intake_gatekeeper import asar, electron, golang
+from intake_gatekeeper import asar, authenticode, electron, golang, packages, rust
 from intake_gatekeeper.model import (
     BinaryInfo,
     Component,
@@ -51,6 +51,7 @@ class Limits:
     max_text_bytes: int = 32 * 1024**2
     max_manifest_bytes: int = 8 * 1024**2
     max_asar_header_bytes: int = 64 * 1024**2
+    max_nested_archive_bytes: int = 64 * 1024**2
 
 
 class _Collector:
@@ -233,11 +234,35 @@ def _inspect_binary(collector: _Collector, data: golang.Bytes, display: str) -> 
     if info is not None:
         _record_go(collector, info, display)
         kinds.append("go")
+    try:
+        crates = rust.read_audit_data(data)
+    except rust.AuditDataError as error:
+        collector.gap("parse-error", f"Rust dependency data could not be read: {error}.", display)
+        crates = None
+    if crates is not None:
+        _record_rust(collector, crates, display)
+        kinds.append("rust")
+    signer: authenticode.Signer | None = None
+    if bytes(data[:2]) == b"MZ":
+        try:
+            signer = authenticode.read_signer(data)
+        except authenticode.SignatureError as error:
+            collector.gap(
+                "signature-unreadable", f"Authenticode signature could not be read: {error}.", display
+            )
     wires = electron.read_fuse_wires(data)
     if wires:
         kinds.append("electron")
     collector.inventory.binaries.append(
-        BinaryInfo(display, len(data), hashlib.sha256(data).hexdigest(), "+".join(kinds) or "native")
+        BinaryInfo(
+            display,
+            len(data),
+            hashlib.sha256(data).hexdigest(),
+            "+".join(kinds) or "native",
+            signer.subject if signer else None,
+            signer.issuer if signer else None,
+            signer.sha1 if signer else None,
+        )
     )
     if not wires:
         return
@@ -326,6 +351,70 @@ def _record_go(collector: _Collector, info: golang.GoBuildInfo, display: str) ->
         collector.component(Component("Go", module.path, module.version), location)
 
 
+def _record_rust(collector: _Collector, crates: list[rust.Crate], display: str) -> None:
+    location = Location(display, snippet="cargo auditable .dep-v0")
+    for crate in crates:
+        if crate.root:
+            component = Component(
+                "crates.io",
+                crate.name,
+                crate.version,
+                kind="application",
+                queryable=False,
+                note="Root package of the executable.",
+            )
+        elif crate.build_only:
+            component = Component(
+                "crates.io",
+                crate.name,
+                crate.version,
+                queryable=False,
+                note="Build-time dependency (build script or proc-macro); not linked into the executable.",
+            )
+        elif not crate.from_crates_io:
+            component = Component(
+                "crates.io",
+                crate.name,
+                crate.version,
+                queryable=False,
+                note=f"Source is {crate.source}, not crates.io; advisories may not apply.",
+            )
+        else:
+            component = Component("crates.io", crate.name, crate.version)
+        collector.component(component, location)
+
+
+def _inspect_python_metadata(collector: _Collector, path: Path, display: str) -> None:
+    with path.open("rb") as handle:
+        head = handle.read(packages.MAX_METADATA_HEAD)
+    parsed = packages.parse_python_metadata(head)
+    if parsed is None:
+        collector.gap("parse-error", "Python package metadata has no valid Name and Version.", display, False)
+        return
+    collector.component(Component("PyPI", *parsed), Location(display))
+
+
+def _inspect_java_archive(collector: _Collector, path: Path, display: str, limits: Limits) -> None:
+    with path.open("rb") as handle:
+        result = packages.read_java_archive(handle, display, limits.max_nested_archive_bytes)
+    collector.inventory.archive_entries_examined += result.entries
+    for artifact in result.artifacts:
+        collector.component(
+            Component("Maven", f"{artifact.group}:{artifact.artifact}", artifact.version),
+            Location(artifact.path),
+        )
+    for problem_path, message, blocking in result.problems:
+        collector.gap("archive-entry", message[0].upper() + message[1:] + ".", problem_path, blocking)
+    if result.unidentified:
+        collector.gap(
+            "jar-unidentified",
+            f"{len(result.unidentified)} JAR(s) carry no Maven pom.properties, so their libraries are not "
+            "inventoried.",
+            result.unidentified[0],
+            blocking=False,
+        )
+
+
 def _inspect_asar(collector: _Collector, path: Path, display: str, limits: Limits) -> None:
     size = path.stat().st_size
     with path.open("rb") as handle:
@@ -379,6 +468,17 @@ def _inspect_file(
     size = path.stat().st_size
     if lowered.endswith(".asar"):
         _inspect_asar(collector, path, display, limits)
+        return
+    if lowered.endswith((".jar", ".war", ".ear")):
+        _inspect_java_archive(collector, path, display, limits)
+        return
+    parent = parts[-2].lower() if len(parts) >= 2 else ""
+    if (
+        (name == "METADATA" and parent.endswith(".dist-info"))
+        or (name == "PKG-INFO" and parent.endswith(".egg-info"))
+        or (lowered.endswith(".egg-info") and size > 0)
+    ):
+        _inspect_python_metadata(collector, path, display)
         return
     manifest = lowered == "package.json" or lowered.endswith((".deps.json", ".runtimeconfig.json"))
     if manifest:
